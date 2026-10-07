@@ -13,11 +13,11 @@ make dry TEXT="Привет"   # собрать метку без печати
 
 ## CLI
 ```
-python print_label.py picture.jpg                 # печать (DPI определяется сам)
-python print_label.py picture.jpg --dry-run       # собрать и проверить, не печатать
-python print_label.py --text "Привет\nмир" --bold --align left --font-size 6
-python print_label.py label.prn                   # готовый .prn как есть
-python print_label.py --check                     # модель и DPI принтера
+python src/print_label.py picture.jpg                 # печать (DPI определяется сам)
+python src/print_label.py picture.jpg --dry-run       # собрать и проверить, не печатать
+python src/print_label.py --text "Привет\nмир" --bold --align left --font-size 6
+python src/print_label.py label.prn                   # готовый .prn как есть
+python src/print_label.py --check                     # модель и DPI принтера
 ```
 | Флаг | Смысл |
 |---|---|
@@ -35,8 +35,8 @@ python print_label.py --check                     # модель и DPI прин
 ## Структура
 | Путь | Что |
 |---|---|
-| `print_label.py` | логика меток и CLI |
-| `gui.py` | веб-GUI |
+| `src/print_label.py` | логика меток и CLI |
+| `src/gui.py` | веб-GUI |
 | `tests/` | pytest |
 | `Makefile` | команды запуска |
 | `doc/ARCHITECTURE.md` | устройство и контракты |

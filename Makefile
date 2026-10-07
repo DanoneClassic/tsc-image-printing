@@ -16,7 +16,7 @@ $(BIN)/python:
 venv: $(BIN)/python ## создать .venv и поставить зависимости
 
 gui: $(BIN)/python ## запустить GUI (http://127.0.0.1:8765)
-	$(BIN)/python gui.py
+	$(BIN)/python src/gui.py
 
 run: gui
 
@@ -24,11 +24,12 @@ test: $(BIN)/python ## прогнать тесты
 	$(BIN)/python -m pytest -q -p no:cacheprovider tests
 
 dry: $(BIN)/python ## собрать метку из TEXT="..." без печати
-	$(BIN)/python print_label.py --text "$(TEXT)" --dry-run
+	$(BIN)/python src/print_label.py --text "$(TEXT)" --dry-run
 
 check: $(BIN)/python ## опросить принтер (модель, DPI)
-	$(BIN)/python print_label.py --check
+	$(BIN)/python src/print_label.py --check
 
 clean: ## удалить кэши и сгенерированные .prn / preview
 	rm -rf __pycache__ tests/__pycache__ .pytest_cache
-	rm -f *.prn preview-*.png
+	rm -rf src/__pycache__
+	rm -f *.prn preview-*.png src/*.prn src/preview-*.png

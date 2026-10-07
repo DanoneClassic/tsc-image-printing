@@ -3,8 +3,8 @@
 Прочитай `doc/ARCHITECTURE.md`, затем это.
 
 ## Карта файлов
-- `print_label.py` — вся логика меток и CLI. Единственный источник правды по TSPL.
-- `gui.py` — тонкая обёртка: HTTP + HTML, вся печатная логика вызывается через `pl.*`.
+- `src/print_label.py` — вся логика меток и CLI. Единственный источник правды по TSPL.
+- `src/gui.py` — тонкая обёртка: HTTP + HTML, вся печатная логика вызывается через `pl.*`.
 - `tests/test_text_label.py` — тесты текста и `build_job` (pytest).
 - `Makefile` — `make test`, `make dry`, `make gui`.
 - `gui/` — локальная копия для PyInstaller, в git не попадает. Не править.
@@ -15,16 +15,16 @@
 3. `--emulator` — единственное место для отличий эмулятора от прибора.
 4. Дефолт `PRINTER_IP`, `PRINTER_PORT`, `FALLBACK_DPI` — не менять без запроса.
 5. Опции GUI передаются в `X-Opts`; новое поле добавляется и в `opts()` (JS), и в `build_job`.
-6. `gui.py` ловит `SystemExit` из `print_label`: ошибки CLI там — это `sys.exit("текст")`.
+6. `src/gui.py` ловит `SystemExit` из `print_label`: ошибки CLI там — это `sys.exit("текст")`.
 
 ## Как проверять
 - `make test` — без принтера и сети.
-- `make dry TEXT="..."` или `print_label.py ... --dry-run` — собрать и провалидировать, не печатая.
+- `make dry TEXT="..."` или `src/print_label.py ... --dry-run` — собрать и провалидировать, не печатая.
 - Никогда не печатай на реальный принтер и не трогай `172.16.88.x` без прямой просьбы.
 
 ## Как добавить
-- Новый флаг CLI: `main()` в `print_label.py`, проверка аргументов рядом с остальными `parser.error`, тест.
-- Новый режим в GUI: новая `_xxx_label(data, dpi, size, o)` в `gui.py`, выбор в `build_job`, поле в `PAGE`.
+- Новый флаг CLI: `main()` в `src/print_label.py`, проверка аргументов рядом с остальными `parser.error`, тест.
+- Новый режим в GUI: новая `_xxx_label(data, dpi, size, o)` в `src/gui.py`, выбор в `build_job`, поле в `PAGE`.
 
 ## Стиль
 Python ≥ 3.10, аннотации типов, без новых зависимостей (только `pillow`, `pyserial`). Комментарии — коротко, «почему». Артефакты (`*.prn`, `preview-*.png`) не коммитить.
