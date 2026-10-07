@@ -126,3 +126,68 @@ def test_build_job_image_still_works():
 def test_build_job_prn_passthrough():
     job = gui.build_job(b"RAW", "t.prn", {"dpi": "203"})
     assert job["raw"] == b"RAW" and job["png"] is None
+
+
+# --- HTTP layer and logging --------------------------------------------------
+
+import json  # noqa: E402
+import logging  # noqa: E402
+import threading  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.parse  # noqa: E402
+import urllib.request  # noqa: E402
+from http.server import ThreadingHTTPServer  # noqa: E402
+
+
+@pytest.fixture
+def server():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), gui.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+    srv.server_close()
+
+
+def post(base, path, body, opts, filename=""):
+    req = urllib.request.Request(
+        base + path,
+        data=body,
+        method="POST",
+        headers={
+            "X-Opts": urllib.parse.quote(json.dumps(opts)),
+            "X-Filename": urllib.parse.quote(filename),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def png_bytes():
+    buf = io.BytesIO()
+    Image.new("RGB", (60, 60), "red").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_preview_of_dropped_image_over_http(server):
+    status, body = post(server, "/preview", png_bytes(), {"dpi": "203"}, "дроп файл.png")
+    assert status == 200 and json.loads(body)["png"]
+
+
+def test_requests_are_logged(server, caplog):
+    with caplog.at_level(logging.INFO, logger="gui"):
+        post(server, "/preview", png_bytes(), {"dpi": "203"}, "a.png")
+    assert any("/preview" in r.getMessage() and "a.png" in r.getMessage() for r in caplog.records)
+
+
+def test_errors_are_logged_and_returned(server, caplog):
+    with caplog.at_level(logging.INFO, logger="gui"):
+        status, _ = post(server, "/preview", b"not an image", {"dpi": "203"}, "bad.png")
+    assert status == 400
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_page_drop_switches_out_of_text_mode():
+    assert "$('mode').value='image'" in gui.PAGE

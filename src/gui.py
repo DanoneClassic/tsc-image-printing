@@ -16,6 +16,7 @@ the standard library, so it works the same on Linux and Windows.
 import argparse
 import io
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -27,6 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import print_label as pl
+
+log = logging.getLogger("gui")
 
 HOST = "127.0.0.1"
 DEFAULT_GUI_PORT = 8765
@@ -138,7 +141,10 @@ window.addEventListener('resize',fit);
 function later(){clearTimeout(timer);timer=setTimeout(preview,250)}
 $('conn').onchange=()=>{show();later()};
 for(const i of ids)$(i).oninput=later;
-function setFile(f){if(!f)return;current=f;preview()}
+// a dropped/picked file always means "print an image": leave text mode, otherwise preview() ignores the file
+function setFile(f){if(!f)return;current=f;console.debug('file',f.name,f.type,f.size);
+  if(isText()){$('mode').value='image';show()}
+  preview()}
 // cancelling the file dialog yields an empty list: keep the previous file and preview
 $('file').onchange=()=>setFile($('file').files[0]);
 $('mode').onchange=()=>{show();preview()};
@@ -147,7 +153,15 @@ document.addEventListener('dragenter',e=>{e.preventDefault();dc++;$('drop').clas
 document.addEventListener('dragleave',e=>{e.preventDefault();dc=Math.max(0,dc-1);if(!dc)$('drop').classList.remove('on')});
 document.addEventListener('dragover',e=>e.preventDefault());
 document.addEventListener('drop',e=>{e.preventDefault();dc=0;$('drop').classList.remove('on');
-  const f=e.dataTransfer&&e.dataTransfer.files[0];setFile(f)});
+  const dt=e.dataTransfer,it=dt&&[...(dt.items||[])].find(i=>i.kind==='file');
+  const f=(dt&&dt.files[0])||(it&&it.getAsFile());
+  console.debug('drop',dt&&[...dt.types],f);
+  if(f)setFile(f);else log('Браузер не получил файл при перетаскивании — вставьте картинку через Ctrl+V или выберите кнопкой','err')});
+// fallback when the file manager gives the browser no drag data (empty types): paste an image with Ctrl+V
+document.addEventListener('paste',e=>{
+  const f=[...((e.clipboardData&&e.clipboardData.files)||[])][0];
+  console.debug('paste',e.clipboardData&&[...e.clipboardData.types],f);
+  if(f&&!/^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)||f&&document.activeElement.type==='file'){e.preventDefault();setFile(f)}});
 $('check').onclick=async()=>{log('Проверяю…');const r=await post('/check');if(!r)return;log(await r.text(),r.ok?'ok':'err')};
 $('print').onclick=async()=>{
   $('print').disabled=true;log('Отправляю…');
@@ -242,8 +256,8 @@ def build_job(data: bytes, filename: str, o: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_args) -> None:  # keep the console quiet
-        pass
+    def log_message(self, fmt: str, *args) -> None:  # route http.server's access log to logging
+        log.debug(fmt, *args)
 
     def _send(self, code: int, body: bytes, ctype: str = "text/plain; charset=utf-8") -> None:
         self.send_response(code)
@@ -282,6 +296,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length)
             filename = unquote(self.headers.get("X-Filename", ""))
             o = parse_opts(self.headers.get("X-Opts", "{}"))
+            log.info("%s %s mode=%s file=%r bytes=%d", self.command, self.path, o.get("mode", "image"), filename, len(body))
             if self.path == "/check":
                 self._check(o)
             elif not body:
@@ -294,10 +309,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, b"not found")
         except SystemExit as exc:  # print_label reports errors via sys.exit(msg)
+            log.warning("%s: %s", self.path, exc.code)
             self._send(400, str(exc.code).encode())
         except Exception as exc:  # noqa: BLE001 - show any failure in the UI
+            log.exception("%s failed", self.path)
             self._send(400, f"{type(exc).__name__}: {exc}".encode())
         except BaseException as exc:  # noqa: BLE001 - never kill the handler thread
+            log.exception("%s crashed", self.path)
             self._send(500, f"{type(exc).__name__}: {exc}".encode())
 
     def _check(self, o: dict) -> None:
@@ -323,6 +341,7 @@ class Handler(BaseHTTPRequestHandler):
         out = io.StringIO()
         with redirect_stdout(out):
             pl.send_raw(job["raw"], make_target(o))
+        log.info("printed: %s", job["info"])
         self._send(200, out.getvalue().strip().encode())
 
 
@@ -372,10 +391,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=DEFAULT_GUI_PORT)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="verbose log (every request, http access log)")
+    parser.add_argument("--log-file", metavar="PATH", help="also write the log to this file")
     args = parser.parse_args()
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file, encoding="utf-8"))
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers,
+    )
     server = bind_server(args.port)
     url = f"http://{HOST}:{server.server_address[1]}"
     print(f"GUI: {url}  (Ctrl+C — выход)")
+    log.info("server started on %s", url)
     if not args.no_browser:
         threading.Timer(0.5, _open_or_hint, args=(url,)).start()
     try:
