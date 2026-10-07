@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# generated labels/previews and local PyInstaller copy
+*.prn
+preview-*.png
+gui/

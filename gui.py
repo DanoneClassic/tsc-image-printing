@@ -196,48 +196,48 @@ def method_from_opt(value: str | None) -> str:
     return {"on": "floyd", "off": "threshold"}.get(value or "auto", value or "auto")
 
 
+def _text_label(data: bytes, dpi: int, size: tuple[int, int], o: dict) -> tuple:
+    """Uploaded text -> (1-bit image, description for the info line)."""
+    text = data.decode("utf-8")
+    if not text.strip():
+        raise ValueError("введите текст")
+    align = o.get("align") if o.get("align") in pl.TEXT_ALIGNS else "center"
+    bw, font_dots, fits = pl.text_to_label(
+        text, dpi, *size, parse_font_mm(str(o.get("fsize") or "")), align, bool(o.get("bold"))
+    )
+    info = f"текст, шрифт {font_dots * 25.4 / dpi:.1f} мм"
+    return bw, info + ("" if fits else ", ⚠ не помещается — уменьшите шрифт")
+
+
+def _image_label(data: bytes, dpi: int, size: tuple[int, int], o: dict) -> tuple:
+    """Uploaded image -> (1-bit image, description for the info line)."""
+    method = method_from_opt(o.get("dither"))
+    # Pillow reads file-like objects; a temp file can't be reopened on Windows
+    bw, dithered = pl.image_to_label(io.BytesIO(data), dpi, None, *size, method=method)
+    if method != "auto":
+        return bw, method
+    return bw, f"{'floyd' if dithered else 'threshold'} (авто)"
+
+
 def build_job(data: bytes, filename: str, o: dict) -> dict:
     """Build the label for the uploaded image or text; returns bytes + preview + log."""
-    width_mm, height_mm = pl.parse_size(o.get("size") or "40")
+    size = pl.parse_size(o.get("size") or "40")
     copies = max(1, int(o.get("copies") or 1))
     emulator = bool(o.get("emu"))
     out = io.StringIO()
     target = make_target(o)
     is_text = o.get("mode") == "text"
-    if is_text:
-        text = data.decode("utf-8")
-        if not text.strip():
-            raise ValueError("введите текст")
-        font_mm = parse_font_mm(str(o.get("fsize") or ""))
     with redirect_stdout(out):
         if not is_text and filename.lower().endswith(".prn"):
             return {"raw": data, "png": None, "info": f"готовый .prn, {len(data)} байт", "log": ""}
         dpi_opt = o.get("dpi", "auto")
         dpi = pl.detect_dpi(target) if dpi_opt == "auto" else int(dpi_opt)
-        if is_text:
-            align = o.get("align") if o.get("align") in pl.TEXT_ALIGNS else "center"
-            bw, font_dots, fits = pl.text_to_label(
-                text, dpi, width_mm, height_mm, font_mm, align, bool(o.get("bold"))
-            )
-            mode_info = f"текст, шрифт {font_dots * 25.4 / dpi:.1f} мм"
-            if not fits:
-                mode_info += ", ⚠ не помещается — уменьшите шрифт"
-        else:
-            method = method_from_opt(o.get("dither"))
-            # Pillow reads file-like objects; a temp file can't be reopened on Windows
-            bw, dithered = pl.image_to_label(io.BytesIO(data), dpi, None, width_mm, height_mm, method=method)
-            mode_info = (
-                f"{method if method != 'auto' else ('floyd' if dithered else 'threshold')}"
-                f"{'' if method != 'auto' else ' (авто)'}"
-            )
-        raw = pl.build_prn(bw, copies, width_mm, height_mm, emulator)
-        pl.validate_prn(raw, dpi, copies, width_mm, height_mm, emulator)
+        bw, mode_info = (_text_label if is_text else _image_label)(data, dpi, size, o)
+        raw = pl.build_prn(bw, copies, *size, emulator)
+        pl.validate_prn(raw, dpi, copies, *size, emulator)
     png = io.BytesIO()
     bw.save(png, format="PNG")
-    info = (
-        f"{width_mm}x{height_mm} мм, {dpi} dpi, {bw.width}x{bw.height} точек, "
-        f"{mode_info}, {len(raw)} байт"
-    )
+    info = f"{size[0]}x{size[1]} мм, {dpi} dpi, {bw.width}x{bw.height} точек, {mode_info}, {len(raw)} байт"
     return {"raw": raw, "png": png.getvalue(), "info": info, "log": out.getvalue()}
 
 
