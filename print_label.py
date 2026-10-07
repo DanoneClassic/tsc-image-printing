@@ -6,6 +6,8 @@ Usage:
     print-label template.prn             # send a ready-made .prn file as-is
     print-label picture.jpg --dry-run    # build + validate + preview, do NOT print
     print-label picture.jpg --size 58x40 # custom label size in mm (default 40x40)
+    print-label --text "Привет" --dry-run      # render text instead of an image
+    print-label --text "Line 1\\nLine 2" --font-size 6 --bold --align left
     print-label picture.jpg --serial COM3      # print over a COM port instead of TCP
     print-label label.prn --serial /dev/ttyUSB0 --baud 115200
     print-label --check                  # only query printer model / DPI (TCP)
@@ -15,6 +17,9 @@ Accepts any Pillow-readable image: transparency is flattened onto white,
 EXIF orientation is honored, CMYK/16-bit/palette modes are normalized.
 Photos are dithered (Floyd-Steinberg) automatically; pure line art is
 thresholded. Override with --dither / --no-dither.
+
+Text (--text) is rendered with a TrueType font into the same 1-bit bitmap, so
+Cyrillic works and the label goes through the same build/validate/print path.
 """
 
 import argparse
@@ -24,7 +29,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 PRINTER_IP = "172.16.88.112"
 PRINTER_PORT = 9100
@@ -37,6 +42,13 @@ MODELS_300DPI = ("300", "310", "345", "346")  # TE300/TE310, TTP-345/346M etc.
 # (measured: line-art memes 0.03-0.04, color/shadowed art 0.05+, photos 0.3+)
 MIDTONE_LO, MIDTONE_HI = 32, 224
 MIDTONE_FRACTION = 0.05
+
+# Text labels: TrueType fonts with Cyrillic, tried in order (Windows, then Linux)
+FONTS_REGULAR = ("arial.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf")
+FONTS_BOLD = ("arialbd.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf")
+TEXT_MARGIN_MM = 2  # blank border around the text block
+MIN_FONT_DOTS = 8
+TEXT_ALIGNS = ("left", "center", "right")
 
 # .prn templates and previews are stored next to the real script location
 OUT_DIR = Path(__file__).resolve().parent
@@ -188,6 +200,93 @@ def image_to_label(
             else Image.Dither.NONE,
         )
     return bw, method != "threshold"
+
+
+# --- text rendering ---------------------------------------------------------
+
+
+def load_font(size_dots: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    names = FONTS_BOLD if bold else FONTS_REGULAR
+    for name in names:
+        try:
+            return ImageFont.truetype(name, size_dots)
+        except OSError:
+            continue
+    sys.exit(f"ERROR: no TrueType font found (tried {', '.join(names)})")
+
+
+def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    """Word-wrap to max_width dots; explicit newlines are kept."""
+    lines = []
+    for paragraph in text.splitlines() or [""]:
+        line = ""
+        for word in paragraph.split():
+            candidate = f"{line} {word}" if line else word
+            if line and font.getlength(candidate) > max_width:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+        lines.append(line)
+    return lines
+
+
+def _layout_text(
+    text: str, size_dots: int, bold: bool, max_width: int, max_height: int
+) -> tuple[ImageFont.FreeTypeFont, list[str], int, bool]:
+    font = load_font(size_dots, bold)
+    lines = wrap_text(text, font, max_width)
+    line_height = sum(font.getmetrics())
+    fits = line_height * len(lines) <= max_height and all(
+        font.getlength(line) <= max_width for line in lines
+    )
+    return font, lines, line_height, fits
+
+
+def text_to_label(
+    text: str,
+    dpi: int,
+    width_mm: int = LABEL_MM,
+    height_mm: int = LABEL_MM,
+    font_mm: float | None = None,
+    align: str = "center",
+    bold: bool = False,
+) -> tuple[Image.Image, int, bool]:
+    """Render text -> 1-bit label image; returns (image, font size in dots, fits).
+
+    font_mm=None picks the largest font at which the wrapped text fits.
+    """
+    width_dots = label_dots(dpi, width_mm)
+    height_dots = label_dots(dpi, height_mm)
+    margin = round(TEXT_MARGIN_MM * dpi / 25.4)
+    max_width = max(8, width_dots - 2 * margin)
+    max_height = max(8, height_dots - 2 * margin)
+
+    if font_mm is None:
+        lo, hi = MIN_FONT_DOTS, max(MIN_FONT_DOTS, max_height)
+        while lo < hi:  # largest size that still fits
+            mid = (lo + hi + 1) // 2
+            if _layout_text(text, mid, bold, max_width, max_height)[3]:
+                lo = mid
+            else:
+                hi = mid - 1
+        size_dots = lo
+    else:
+        size_dots = max(MIN_FONT_DOTS, round(font_mm * dpi / 25.4))
+    font, lines, line_height, fits = _layout_text(
+        text, size_dots, bold, max_width, max_height
+    )
+
+    # drawing on a mode-"1" image disables antialiasing: crisp thermal output
+    bw = Image.new("1", (width_dots, height_dots), 1)
+    draw = ImageDraw.Draw(bw)
+    y = (height_dots - line_height * len(lines)) // 2
+    for line in lines:
+        free = width_dots - 2 * margin - font.getlength(line)
+        x = margin + {"left": 0, "center": free / 2, "right": free}[align]
+        draw.text((round(x), y), line, font=font, fill=0)
+        y += line_height
+    return bw, size_dots, fits
 
 
 # --- TSPL assembly and validation ------------------------------------------
@@ -443,6 +542,12 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dither", action="store_true", help="force Floyd-Steinberg")
     mode.add_argument("--no-dither", action="store_true", help="force plain threshold")
+    parser.add_argument("--text", help=r"print this text instead of an image (\n = new line)")
+    parser.add_argument(
+        "--font-size", type=float, metavar="MM", help="text height in mm (default: auto-fit)"
+    )
+    parser.add_argument("--align", choices=TEXT_ALIGNS, default="center", help="text alignment")
+    parser.add_argument("--bold", action="store_true", help="bold text")
     parser.add_argument(
         "--method",
         choices=METHODS,
@@ -479,14 +584,20 @@ def main() -> None:
     if args.check:
         detect_dpi(printer)
         return
-    if not args.target:
-        parser.error("target image or .prn file is required (or use --check)")
+    if args.text is not None and args.target:
+        parser.error("give either a target file or --text, not both")
+    if args.text is None and not args.target:
+        parser.error("target image or .prn file is required (or use --text / --check)")
+    if args.text is not None and not args.text.strip():
+        parser.error("--text must not be empty")
+    if args.font_size is not None and args.font_size <= 0:
+        parser.error("--font-size must be positive")
     if args.copies < 1:
         parser.error("--copies must be >= 1")
     if args.serial and args.baud <= 0:
         parser.error("--baud must be positive")
 
-    target = Path(args.target)
+    target = Path(args.target or "text")
     if target.suffix.lower() == ".prn":
         if not target.is_file():
             sys.exit(f"ERROR: file not found: {target}")
@@ -498,10 +609,20 @@ def main() -> None:
 
     width_mm, height_mm = args.size
     dpi = args.dpi or detect_dpi(printer)
-    dither = True if args.dither else False if args.no_dither else None
-    bw, dithered = image_to_label(
-        target, dpi, dither, width_mm, height_mm, method=args.method
-    )
+    if args.text is not None:
+        text = args.text.replace("\\n", "\n")
+        bw, font_dots, fits = text_to_label(
+            text, dpi, width_mm, height_mm, args.font_size, args.align, args.bold
+        )
+        dithered = False
+        print(f"TEXT: font {font_dots} dots")
+        if not fits:
+            print("WARNING: text does not fit the label and will be clipped")
+    else:
+        dither = True if args.dither else False if args.no_dither else None
+        bw, dithered = image_to_label(
+            target, dpi, dither, width_mm, height_mm, method=args.method
+        )
     raw = build_prn(bw, args.copies, width_mm, height_mm, args.emulator)
 
     size_tag = f"{width_mm}x{height_mm}"

@@ -3,8 +3,8 @@
 # requires-python = ">=3.10"
 # dependencies = ["pillow", "pyserial"]
 # ///
-"""Minimal GUI for print_label.py: pick a printer connection and an image,
-see the exact 1-bit label preview, print.
+"""Minimal GUI for print_label.py: pick a printer connection and an image
+(or type text), see the exact 1-bit label preview, print.
 
     python3 gui.py            # opens http://127.0.0.1:8765 in the browser
     python3 gui.py --port 9000 --no-browser
@@ -47,7 +47,7 @@ main{max-width:1200px;margin:0 auto;padding:clamp(8px,2vw,24px);display:grid;gap
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
 h1{grid-column:1/-1;margin:0;font-size:20px}h2{margin:0 0 10px;font-size:15px}
 label{display:block;margin:8px 0 3px;font-size:13px;opacity:.8}
-input,select,button{width:100%;padding:7px 9px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px}
+input,select,textarea,button{width:100%;padding:7px 9px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 button{cursor:pointer;background:var(--acc);color:#fff;border:0;margin-top:12px;font-weight:600}
 button.sec{background:var(--bg);color:var(--fg);border:1px solid var(--line)}
@@ -59,9 +59,10 @@ button:disabled{opacity:.5;cursor:default}
 .ok{color:var(--ok)}.err{color:var(--err)}.hide{display:none}#pv.hide{display:none}
 #drop{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(31,111,235,.25);border:4px dashed var(--acc);font-size:28px;font-weight:600;z-index:10;pointer-events:none}
 #drop.on{display:flex}
+textarea{resize:vertical;min-height:5em}
 .chk{display:flex;gap:8px;align-items:center;margin-top:10px}.chk input{width:auto}
 </style></head><body><div id="drop">Отпустите файл</div><main>
-<h1>Печать картинки на TSC-принтере</h1>
+<h1>Печать картинки или текста на TSC-принтере</h1>
 <section>
 <h2>Принтер</h2>
 <label>Подключение</label>
@@ -72,7 +73,13 @@ button:disabled{opacity:.5;cursor:default}
 <div class="chk"><input id="emu" type="checkbox"><span>Эмулятор (tsc-emulator, режим совместимости)</span></div>
 <button class="sec" id="check">Проверить связь</button>
 <h2 style="margin-top:18px">Этикетка</h2>
-<label>Картинка</label><input id="file" type="file" accept="image/*,.prn">
+<label>Что печатаем</label>
+<select id="mode"><option value="image">Картинка</option><option value="text">Текст</option></select>
+<div id="img"><label>Картинка</label><input id="file" type="file" accept="image/*,.prn"></div>
+<div id="txt" class="hide"><label>Текст</label><textarea id="text" rows="4"></textarea>
+<div class="row"><div><label>Высота шрифта, мм (пусто — авто)</label><input id="fsize" placeholder="авто"></div>
+<div><label>Выравнивание</label><select id="align"><option value="center">по центру</option><option value="left">влево</option><option value="right">вправо</option></select></div></div>
+<div class="chk"><input id="bold" type="checkbox"><span>Жирный</span></div></div>
 <div class="row"><div><label>Размер, мм (40 или 58x40)</label><input id="size" value="40x40"></div>
 <div><label>Копий</label><input id="copies" type="number" min="1" value="1"></div></div>
 <div class="row"><div><label>DPI</label><select id="dpi"><option value="auto">авто (запрос ~!T)</option><option value="203">203</option><option value="300">300</option></select></div>
@@ -89,20 +96,25 @@ button:disabled{opacity:.5;cursor:default}
 <script>
 const $=id=>document.getElementById(id);
 let timer=null,current;
-const ids=['conn','ip','port','sport','baud','wname','emu','size','copies','dpi','dither'];
+const ids=['conn','ip','port','sport','baud','wname','emu','size','copies','dpi','dither','text','fsize','align','bold'];
+const isText=()=>$('mode').value==='text';
 function opts(){return{conn:$('conn').value,ip:$('ip').value.trim(),port:+$('port').value,serial:$('sport').value.trim(),baud:+$('baud').value,
- win:$('wname').value.trim(),emu:$('emu').checked,size:$('size').value,copies:+$('copies').value,dpi:$('dpi').value,dither:$('dither').value}}
+ win:$('wname').value.trim(),emu:$('emu').checked,size:$('size').value,copies:+$('copies').value,dpi:$('dpi').value,dither:$('dither').value,
+ mode:$('mode').value,fsize:$('fsize').value.trim(),align:$('align').value,bold:$('bold').checked}}
 function log(t,c){const l=$('log');l.textContent=t;l.className=c||''}
-function show(){for(const k of ['tcp','serial','win'])$(k).classList.toggle('hide',$('conn').value!==k)}
+function show(){for(const k of ['tcp','serial','win'])$(k).classList.toggle('hide',$('conn').value!==k);
+ $('img').classList.toggle('hide',isText());$('txt').classList.toggle('hide',!isText())}
 async function post(path,body){
-  const f=current;
-  if(!f&&path!=='/check'){log('Выберите картинку','err');return null}
+  const f=isText()?null:current;
+  if(path!=='/check'&&(isText()?!$('text').value.trim():!f)){log(isText()?'Введите текст':'Выберите картинку','err');return null}
   const h={'X-Opts':encodeURIComponent(JSON.stringify(opts())),'X-Filename':encodeURIComponent(f?f.name:'')};
-  try{return await fetch(path,{method:'POST',headers:h,body:f||''})}
+  try{return await fetch(path,{method:'POST',headers:h,body:isText()?$('text').value:(f||'')})}
   catch(e){log('Нет связи с сервером: '+e,'err');return null}
 }
 async function preview(){
-  if(!current){return}
+  if(isText()?!$('text').value.trim():!current){
+    if(isText()){$('pv').classList.add('hide');$('print').disabled=true;$('info').textContent='Введите текст'}
+    return}
   const r=await post('/preview');
   if(!r)return;
   if(!r.ok){$('pv').classList.add('hide');$('print').disabled=true;$('info').textContent='';log(await r.text(),'err');return}
@@ -129,6 +141,7 @@ for(const i of ids)$(i).oninput=later;
 function setFile(f){if(!f)return;current=f;preview()}
 // cancelling the file dialog yields an empty list: keep the previous file and preview
 $('file').onchange=()=>setFile($('file').files[0]);
+$('mode').onchange=()=>{show();preview()};
 let dc=0;
 document.addEventListener('dragenter',e=>{e.preventDefault();dc++;$('drop').classList.add('on')});
 document.addEventListener('dragleave',e=>{e.preventDefault();dc=Math.max(0,dc-1);if(!dc)$('drop').classList.remove('on')});
@@ -164,34 +177,66 @@ def make_target(o: dict) -> pl.Target:
     return pl.Target(ip=o.get("ip") or pl.PRINTER_IP, port=o.get("port") or pl.PRINTER_PORT)
 
 
+def parse_font_mm(text: str) -> float | None:
+    """'' / 'авто' -> None (auto-fit); '6' or '6,5' -> mm."""
+    cleaned = text.lower().replace("мм", "").replace("mm", "").replace(",", ".").strip()
+    if cleaned in ("", "auto", "авто"):
+        return None
+    try:
+        value = float(cleaned)
+    except ValueError:
+        raise ValueError(f"высота шрифта: число в мм или пусто, а не {text!r}")
+    if value <= 0:
+        raise ValueError("высота шрифта должна быть больше нуля")
+    return value
+
+
 def method_from_opt(value: str | None) -> str:
     """GUI value -> image_to_label method; legacy on/off kept."""
     return {"on": "floyd", "off": "threshold"}.get(value or "auto", value or "auto")
 
 
 def build_job(data: bytes, filename: str, o: dict) -> dict:
-    """Build the label for the uploaded image; returns bytes + preview + log."""
+    """Build the label for the uploaded image or text; returns bytes + preview + log."""
     width_mm, height_mm = pl.parse_size(o.get("size") or "40")
     copies = max(1, int(o.get("copies") or 1))
     emulator = bool(o.get("emu"))
     out = io.StringIO()
     target = make_target(o)
+    is_text = o.get("mode") == "text"
+    if is_text:
+        text = data.decode("utf-8")
+        if not text.strip():
+            raise ValueError("введите текст")
+        font_mm = parse_font_mm(str(o.get("fsize") or ""))
     with redirect_stdout(out):
-        if filename.lower().endswith(".prn"):
+        if not is_text and filename.lower().endswith(".prn"):
             return {"raw": data, "png": None, "info": f"готовый .prn, {len(data)} байт", "log": ""}
         dpi_opt = o.get("dpi", "auto")
         dpi = pl.detect_dpi(target) if dpi_opt == "auto" else int(dpi_opt)
-        method = method_from_opt(o.get("dither"))
-        # Pillow reads file-like objects; a temp file can't be reopened on Windows
-        bw, dithered = pl.image_to_label(io.BytesIO(data), dpi, None, width_mm, height_mm, method=method)
+        if is_text:
+            align = o.get("align") if o.get("align") in pl.TEXT_ALIGNS else "center"
+            bw, font_dots, fits = pl.text_to_label(
+                text, dpi, width_mm, height_mm, font_mm, align, bool(o.get("bold"))
+            )
+            mode_info = f"текст, шрифт {font_dots * 25.4 / dpi:.1f} мм"
+            if not fits:
+                mode_info += ", ⚠ не помещается — уменьшите шрифт"
+        else:
+            method = method_from_opt(o.get("dither"))
+            # Pillow reads file-like objects; a temp file can't be reopened on Windows
+            bw, dithered = pl.image_to_label(io.BytesIO(data), dpi, None, width_mm, height_mm, method=method)
+            mode_info = (
+                f"{method if method != 'auto' else ('floyd' if dithered else 'threshold')}"
+                f"{'' if method != 'auto' else ' (авто)'}"
+            )
         raw = pl.build_prn(bw, copies, width_mm, height_mm, emulator)
         pl.validate_prn(raw, dpi, copies, width_mm, height_mm, emulator)
     png = io.BytesIO()
     bw.save(png, format="PNG")
     info = (
         f"{width_mm}x{height_mm} мм, {dpi} dpi, {bw.width}x{bw.height} точек, "
-        f"{method if method != 'auto' else ('floyd' if dithered else 'threshold')}"
-        f"{'' if method != 'auto' else ' (авто)'}, {len(raw)} байт"
+        f"{mode_info}, {len(raw)} байт"
     )
     return {"raw": raw, "png": png.getvalue(), "info": info, "log": out.getvalue()}
 
@@ -240,7 +285,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/check":
                 self._check(o)
             elif not body:
-                self._send(400, "выберите картинку".encode())
+                hint = "введите текст" if o.get("mode") == "text" else "выберите картинку"
+                self._send(400, hint.encode())
             elif self.path == "/preview":
                 self._preview(body, filename, o)
             elif self.path == "/print":
